@@ -1,0 +1,6 @@
+{
+  "name": "Verdict Desk",
+  "description": "A native-feeling mobile decision-research assistant delivering decisive recommendations, live web-grounded research, benchmark references, and uncertainty flags.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

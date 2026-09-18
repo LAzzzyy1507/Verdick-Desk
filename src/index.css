@@ -1,0 +1,59 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-serif: 'Newsreader', Georgia, Cambria, serif;
+    --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, sans-serif;
+    --app-accent: #C2410C; /* Refined Analyst Ochre/Terracotta, reserved strictly for Verdict and winning option */
+  }
+
+  body {
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+    overscroll-behavior-y: none;
+  }
+
+  /* Dynamic Type Scaling */
+  html[data-dynamic-type="small"] {
+    font-size: 14px;
+  }
+  html[data-dynamic-type="default"] {
+    font-size: 16px;
+  }
+  html[data-dynamic-type="large"] {
+    font-size: 18px;
+  }
+  html[data-dynamic-type="extra-large"] {
+    font-size: 20px;
+  }
+}
+
+.font-brief-serif {
+  font-family: var(--font-serif);
+}
+
+.font-sf-sans {
+  font-family: var(--font-sans);
+}
+
+/* iOS Safe Areas */
+.pt-safe {
+  padding-top: env(safe-area-inset-top, 12px);
+}
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 24px);
+}
+
+/* Subtle haptic pulse animation */
+@keyframes haptic-pulse {
+  0% { transform: scale(1); }
+  50% { transform: scale(0.985); }
+  100% { transform: scale(1); }
+}
+
+.animate-haptic {
+  animation: haptic-pulse 0.2s cubic-bezier(0.25, 1, 0.5, 1);
+}
