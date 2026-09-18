@@ -87,6 +87,7 @@ export interface UserAccount {
   email: string;
   name: string;
   authProvider: 'apple' | 'email';
+  token?: string;
   isSynced: boolean;
   lastSyncedAt?: string;
 }

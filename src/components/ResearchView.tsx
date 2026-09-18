@@ -99,26 +99,24 @@ export const ResearchView: React.FC<ResearchViewProps> = ({
     setErrorMessage(null);
     triggerHaptic('medium');
 
-    // Stage progression for user transparency
-    setResearchStage('Initiating live Google Search grounding...');
-    const t1 = setTimeout(() => {
-      setResearchStage('Scanning verified prices, salary indices & market data...');
-    }, 1800);
-    const t2 = setTimeout(() => {
-      setResearchStage('Stripping marketing noise down to deciding factors...');
-    }, 3800);
-    const t3 = setTimeout(() => {
-      setResearchStage('Formulating single clear verdict & reference benchmarks...');
-    }, 5800);
+    // Real-time stage progression directly driven by server search and inference events
+    setResearchStage('Connecting to live Google Search grounding engine...');
 
     try {
-      const decision = await apiService.researchDecision({
-        question: qText.trim(),
-        constraints: cText.trim() || undefined,
-        category: catVal,
-        followUpContext: followUp,
-        previousVerdict: currentDecision ? currentDecision.verdict : undefined,
-      });
+      const decision = await apiService.researchDecisionStream(
+        {
+          question: qText.trim(),
+          constraints: cText.trim() || undefined,
+          category: catVal,
+          followUpContext: followUp,
+          previousVerdict: currentDecision ? currentDecision.verdict : undefined,
+        },
+        (progress) => {
+          if (progress.stage) {
+            setResearchStage(progress.stage);
+          }
+        }
+      );
 
       storageService.saveDecision(decision);
       onDecisionCreated(decision);
@@ -127,9 +125,6 @@ export const ResearchView: React.FC<ResearchViewProps> = ({
       setErrorMessage(err.message || 'Decision research encountered an error. Please try again.');
       triggerHaptic('warning');
     } finally {
-      clearTimeout(t1);
-      clearTimeout(t2);
-      clearTimeout(t3);
       setIsResearching(false);
       setResearchStage('');
     }

@@ -3,6 +3,7 @@ import path from "path";
 import { GoogleGenAI } from "@google/genai";
 import { createServer as createViteServer } from "vite";
 import dotenv from "dotenv";
+import { PersistentVaultStore, RateLimiter } from "./server/vaultStore";
 
 dotenv.config();
 
@@ -10,6 +11,47 @@ const app = express();
 const PORT = 3000;
 
 app.use(express.json({ limit: "10mb" }));
+
+// Persistent vault and session store
+const vaultStore = new PersistentVaultStore();
+
+// Rate Limiters to prevent quota exhaustion
+const researchLimiter = new RateLimiter(20, 5); // 20 requests per 5 min
+const recheckLimiter = new RateLimiter(20, 5);  // 20 requests per 5 min
+const promptLabLimiter = new RateLimiter(30, 5); // 30 requests per 5 min
+const authLimiter = new RateLimiter(10, 5);      // 10 auth attempts per 5 min
+
+// Helper to extract client IP safely
+function getClientIp(req: express.Request): string {
+  const forwarded = req.headers["x-forwarded-for"];
+  if (typeof forwarded === "string") {
+    return forwarded.split(",")[0].trim();
+  }
+  return req.socket.remoteAddress || "127.0.0.1";
+}
+
+// Authentication Middleware: Enforces valid session token
+function authenticate(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({
+      error: "Authentication required. Please provide a valid Bearer session token.",
+    });
+  }
+
+  const token = authHeader.substring(7).trim();
+  const sessionInfo = vaultStore.getSession(token);
+
+  if (!sessionInfo.valid || !sessionInfo.session) {
+    return res.status(401).json({
+      error: "Session expired or invalid. Please sign in again.",
+    });
+  }
+
+  (req as any).session = sessionInfo.session;
+  (req as any).user = sessionInfo.user;
+  next();
+}
 
 // Lazy initialization of Gemini client
 let aiClient: GoogleGenAI | null = null;
@@ -31,12 +73,6 @@ function getAI(): GoogleGenAI {
   return aiClient;
 }
 
-// In-memory cloud sync store for multi-device simulation
-const cloudSyncStore = new Map<string, any[]>();
-
-// Pre-seeded initial cloud sync demo data if requested
-cloudSyncStore.set("demo@verdictdesk.apple", []);
-
 // Health check endpoint
 app.get("/api/health", (_req, res) => {
   res.json({
@@ -46,21 +82,109 @@ app.get("/api/health", (_req, res) => {
   });
 });
 
-// Cloud Sync endpoints
-app.get("/api/sync/:userId", (req, res) => {
-  const { userId } = req.params;
-  const decisions = cloudSyncStore.get(userId) || [];
-  res.json({ success: true, decisions, syncedAt: new Date().toISOString() });
+// Authentication Endpoints
+app.post("/api/auth/request-code", (req, res) => {
+  const ip = getClientIp(req);
+  const rate = authLimiter.check(`req_code_${ip}`);
+  if (!rate.allowed) {
+    res.setHeader("Retry-After", rate.resetSec);
+    return res.status(429).json({
+      error: `Too many login attempts. Please wait ${rate.resetSec} seconds.`,
+    });
+  }
+
+  const { email, name } = req.body;
+  if (!email || typeof email !== "string" || !email.includes("@")) {
+    return res.status(400).json({ error: "A valid email address is required." });
+  }
+
+  const { code, expiresAt } = vaultStore.createVerificationCode(email, name);
+  console.log(`[AUTH] Verification code generated for ${email}: ${code}`);
+
+  return res.json({
+    success: true,
+    message: `Verification code sent to ${email}.`,
+    devCode: code, // Convenient preview code for instant verification
+    expiresAt: new Date(expiresAt).toISOString(),
+  });
 });
 
-app.post("/api/sync/:userId", (req, res) => {
+app.post("/api/auth/verify-code", (req, res) => {
+  const ip = getClientIp(req);
+  const rate = authLimiter.check(`verify_${ip}`);
+  if (!rate.allowed) {
+    res.setHeader("Retry-After", rate.resetSec);
+    return res.status(429).json({
+      error: `Too many verification attempts. Please wait ${rate.resetSec} seconds.`,
+    });
+  }
+
+  const { email, code, name } = req.body;
+  if (!email || !code) {
+    return res.status(400).json({ error: "Email and verification code are required." });
+  }
+
+  const result = vaultStore.verifyCode(email, code, name);
+  if (!result.success || !result.token) {
+    return res.status(400).json({ error: result.error || "Failed to verify code." });
+  }
+
+  return res.json({
+    success: true,
+    token: result.token,
+    user: result.user,
+  });
+});
+
+app.post("/api/auth/logout", authenticate, (req, res) => {
+  const currentSession = (req as any).session;
+  vaultStore.revokeSession(currentSession.token);
+  return res.json({ success: true, message: "Session signed out and token revoked." });
+});
+
+app.get("/api/auth/me", authenticate, (req, res) => {
+  return res.json({
+    success: true,
+    user: (req as any).user,
+    session: {
+      expiresAt: (req as any).session.expiresAt,
+    },
+  });
+});
+
+// Cloud Sync endpoints: SECURED by Bearer Session Token & User Ownership Check
+app.get("/api/sync/:userId", authenticate, (req, res) => {
   const { userId } = req.params;
+  const currentSession = (req as any).session;
+
+  // Strict ownership check: prevent cross-account impersonation
+  if (currentSession.userId !== userId) {
+    return res.status(403).json({
+      error: "Forbidden: You do not have permission to access another user's decision vault.",
+    });
+  }
+
+  const decisions = vaultStore.getDecisions(userId);
+  return res.json({ success: true, decisions, syncedAt: new Date().toISOString() });
+});
+
+app.post("/api/sync/:userId", authenticate, (req, res) => {
+  const { userId } = req.params;
+  const currentSession = (req as any).session;
+
+  // Strict ownership check: prevent overwriting another user's vault
+  if (currentSession.userId !== userId) {
+    return res.status(403).json({
+      error: "Forbidden: You do not have permission to modify another user's decision vault.",
+    });
+  }
+
   const { decisions } = req.body;
   if (Array.isArray(decisions)) {
-    cloudSyncStore.set(userId, decisions);
+    vaultStore.saveDecisions(userId, decisions);
     return res.json({ success: true, count: decisions.length, syncedAt: new Date().toISOString() });
   }
-  return res.status(400).json({ error: "Invalid decisions payload" });
+  return res.status(400).json({ error: "Invalid decisions payload. Array required." });
 });
 
 // Helper to clean JSON string from LLM response
@@ -87,6 +211,15 @@ function extractJSON(text: string): any {
 
 // Decision Research API (Live Search-Grounded)
 app.post("/api/verdict/research", async (req, res) => {
+  const ip = getClientIp(req);
+  const rate = researchLimiter.check(`research_${ip}`);
+  if (!rate.allowed) {
+    res.setHeader("Retry-After", rate.resetSec);
+    return res.status(429).json({
+      error: `Research rate limit exceeded. Please wait ${rate.resetSec} seconds before submitting a new query.`,
+    });
+  }
+
   try {
     const { question, constraints, category = "other", followUpContext, previousVerdict } = req.body;
 
@@ -220,8 +353,176 @@ Search current web information for prices, verified specs, salary data, or bench
   }
 });
 
+// Streaming Decision Research API for Real-Time Stage Tracking (Server-Sent Events)
+app.post("/api/verdict/research-stream", async (req, res) => {
+  const ip = getClientIp(req);
+  const rate = researchLimiter.check(`research_${ip}`);
+  if (!rate.allowed) {
+    res.setHeader("Retry-After", rate.resetSec);
+    return res.status(429).json({
+      error: `Research rate limit exceeded. Please wait ${rate.resetSec} seconds before starting new research.`,
+    });
+  }
+
+  const { question, constraints, category = "other", followUpContext, previousVerdict } = req.body;
+  if (!question || typeof question !== "string" || !question.trim()) {
+    return res.status(400).json({ error: "A decision question is required." });
+  }
+
+  // Setup Server-Sent Events headers
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  if (typeof (res as any).flushHeaders === "function") {
+    (res as any).flushHeaders();
+  }
+
+  const sendEvent = (event: string, data: any) => {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+
+  try {
+    sendEvent("progress", { stage: "Connecting to live Google Search grounding engine...", step: 1, totalSteps: 4 });
+
+    const ai = getAI();
+    sendEvent("progress", { stage: "Scanning verified prices, salary indices & market data...", step: 2, totalSteps: 4 });
+
+    const systemPrompt = `You are Verdict Desk, an elite, highly decisive intelligence briefing analyst for high-stakes decisions.
+Your task is to conduct real-world research using Google Search, strip away marketing fluff, reduce the options to only the factors that actually matter for this decision, and deliver:
+1. EXACTLY ONE CLEAR VERDICT. A single definitive recommended option with confidence level ("High", "Medium", or "Low") and 2–3 crisp sentences of decisive reasoning. Stiff mandate: DO NOT HEDGE. NO "it depends on what you value", "both have pros and cons", or "it comes down to personal preference". Make the executive call based on the provided constraints and current objective data.
+2. COMPARISON VIEW: Compare each candidate option (2 to 4 options). Strip each option strictly to 2-4 critical deciding factors (e.g. Total Cost of Ownership, True Battery Life under Load, Median Compensation in City, Workload/Drop-off Rate). Mark the single winner.
+3. REFERENCE POINTS: 2 to 5 standalone benchmark facts relevant to the decision (e.g., standard industry salary band, average resale depreciation, typical graduation rate, market retail baseline). These MUST read as objective market context, NOT as arguments for one option.
+4. UNCERTAINTY FLAGS: Anything genuinely unresolved or unverified from the search (e.g. regional tariff variance, unconfirmed release dates, conflicting employer bonus reports, pending accreditation). NEVER guess or gloss over gaps; flag them explicitly.
+5. CATEGORY: Classify into "shopping", "career", "academic", or "other".
+
+OUTPUT FORMAT: Return STRICT valid JSON only without commentary.
+Schema:
+{
+  "title": string,
+  "category": "shopping" | "career" | "academic" | "other",
+  "verdict": {
+    "recommendedOption": string,
+    "confidence": "High" | "Medium" | "Low",
+    "reasoning": string (2-3 crisp sentences, decisive, zero hedging)
+  },
+  "options": [
+    {
+      "name": string,
+      "isWinner": boolean,
+      "statusBadge": string (e.g. "Optimal Value", "Overpriced for Spec", "Highest Risk-Adjusted ROI"),
+      "keyFactors": [
+        {
+          "factor": string,
+          "value": string,
+          "sentiment": "positive" | "neutral" | "negative"
+        }
+      ]
+    }
+  ],
+  "referencePoints": [
+    {
+      "label": string,
+      "metric": string,
+      "context": string,
+      "sourceHint": string
+    }
+  ],
+  "uncertainties": [
+    {
+      "title": string,
+      "detail": string,
+      "severity": "high" | "medium" | "low"
+    }
+  ]
+}`;
+
+    const userPromptContent = `Decision Question: "${question}"
+Optional Constraints: ${constraints ? JSON.stringify(constraints) : "None provided"}
+${followUpContext ? `Follow-up constraint / Adjustment: "${followUpContext}"\nPrevious Decision Context: ${JSON.stringify(previousVerdict || {})}` : ""}
+
+Search current web information for prices, verified specs, salary data, or benchmarks. Output strict JSON matching the schema.`;
+
+    let response;
+    let webSources: { title: string; url: string }[] = [];
+
+    if (process.env.GEMINI_API_KEY) {
+      response = await ai.models.generateContent({
+        model: "gemini-3.8-flash",
+        contents: userPromptContent,
+        config: {
+          systemInstruction: systemPrompt,
+          tools: [{ googleSearch: {} }],
+        },
+      });
+
+      sendEvent("progress", { stage: "Extracting grounding citations & stripping marketing noise...", step: 3, totalSteps: 4 });
+
+      const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
+      if (Array.isArray(chunks)) {
+        webSources = chunks
+          .map((c: any) => {
+            if (c.web?.uri) {
+              return {
+                title: c.web.title || new URL(c.web.uri).hostname,
+                url: c.web.uri,
+              };
+            }
+            return null;
+          })
+          .filter(Boolean) as { title: string; url: string }[];
+      }
+    } else {
+      throw new Error("GEMINI_API_KEY is not configured.");
+    }
+
+    sendEvent("progress", { stage: "Formulating single clear verdict & reference benchmarks...", step: 4, totalSteps: 4 });
+
+    const rawText = response.text || "";
+    const parsedData = extractJSON(rawText);
+
+    const resultRecord = {
+      id: "vd_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7),
+      question,
+      constraints: constraints || "",
+      category: parsedData.category || category,
+      title: parsedData.title || question,
+      verdict: parsedData.verdict,
+      options: parsedData.options || [],
+      referencePoints: parsedData.referencePoints || [],
+      uncertainties: parsedData.uncertainties || [],
+      webSources: webSources.slice(0, 6),
+      timestamp: new Date().toISOString(),
+      trackedForAlerts: false,
+      followUps: followUpContext
+        ? [
+            {
+              adjustment: followUpContext,
+              timestamp: new Date().toISOString(),
+            },
+          ]
+        : [],
+    };
+
+    sendEvent("complete", { decision: resultRecord });
+    res.end();
+  } catch (error: any) {
+    console.error("Streaming research endpoint error:", error);
+    sendEvent("error", { error: error.message || "Failed to complete decision research." });
+    res.end();
+  }
+});
+
 // Re-check Decision API
 app.post("/api/verdict/recheck", async (req, res) => {
+  const ip = getClientIp(req);
+  const rate = recheckLimiter.check(`recheck_${ip}`);
+  if (!rate.allowed) {
+    res.setHeader("Retry-After", rate.resetSec);
+    return res.status(429).json({
+      error: `Re-check rate limit exceeded. Please wait ${rate.resetSec} seconds before re-checking decisions.`,
+    });
+  }
+
   try {
     const { decision } = req.body;
     if (!decision || !decision.question) {
@@ -322,6 +623,15 @@ Perform a fresh web search to verify if numbers, prices, terms, or availability 
 
 // Prompt Lab API (Generates 3 tailored variants with explanatory rationale)
 app.post("/api/prompt-lab", async (req, res) => {
+  const ip = getClientIp(req);
+  const rate = promptLabLimiter.check(`prompt_lab_${ip}`);
+  if (!rate.allowed) {
+    res.setHeader("Retry-After", rate.resetSec);
+    return res.status(429).json({
+      error: `Prompt Lab rate limit exceeded. Please wait ${rate.resetSec} seconds.`,
+    });
+  }
+
   try {
     const { requestText } = req.body;
     if (!requestText || !requestText.trim()) {

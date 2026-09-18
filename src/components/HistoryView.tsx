@@ -5,8 +5,6 @@ import { storageService } from '../services/storage';
 import {
   Search,
   RotateCcw,
-  Bell,
-  BellOff,
   Trash2,
   ExternalLink,
   CheckCircle2,
@@ -77,23 +75,6 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
       triggerHaptic('warning');
     } finally {
       setRecheckingId(null);
-    }
-  };
-
-  const handleToggleTracking = (e: React.MouseEvent, id: string) => {
-    e.stopPropagation();
-    triggerHaptic('light');
-    const updated = storageService.toggleTracking(id);
-    if (updated) {
-      onUpdateDecision(updated);
-      if (updated.trackedForAlerts) {
-        // Request notification permission if available
-        if (typeof window !== 'undefined' && 'Notification' in window) {
-          if (Notification.permission === 'default') {
-            Notification.requestPermission();
-          }
-        }
-      }
     }
   };
 
@@ -192,29 +173,12 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                     </span>
                   </div>
 
-                  {/* Actions: Tracking Alert & Delete */}
+                  {/* Actions: Delete */}
                   <div className="flex items-center gap-1">
                     <button
-                      onClick={(e) => handleToggleTracking(e, decision.id)}
-                      className={`p-1.5 rounded-lg transition-colors ${
-                        decision.trackedForAlerts
-                          ? 'bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-300'
-                          : 'text-stone-400 hover:text-stone-600 dark:hover:text-stone-300'
-                      }`}
-                      title={decision.trackedForAlerts ? 'Tracking changes enabled' : 'Track for material shifts'}
-                      aria-label="Toggle change tracking"
-                    >
-                      {decision.trackedForAlerts ? (
-                        <Bell className="w-3.5 h-3.5" />
-                      ) : (
-                        <BellOff className="w-3.5 h-3.5" />
-                      )}
-                    </button>
-
-                    <button
                       onClick={(e) => handleDelete(e, decision.id)}
-                      className="p-1.5 rounded-lg text-stone-400 hover:text-rose-600 transition-colors"
-                      title="Delete decision"
+                      className="p-1.5 rounded-lg text-stone-400 hover:text-rose-600 dark:hover:text-rose-400 transition-colors cursor-pointer"
+                      title="Delete decision brief"
                       aria-label="Delete decision"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
@@ -263,7 +227,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                     <button
                       onClick={(e) => handleRecheck(e, decision)}
                       disabled={isRechecking || isOffline}
-                      className="px-2.5 py-1 rounded-lg border border-stone-300 dark:border-stone-700 hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-800 dark:text-stone-200 text-xs font-semibold flex items-center gap-1.5 transition-colors disabled:opacity-40"
+                      className="px-2.5 py-1 rounded-lg border border-stone-300 dark:border-stone-700 hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-800 dark:text-stone-200 text-xs font-semibold flex items-center gap-1.5 transition-colors disabled:opacity-40 cursor-pointer"
                     >
                       {isRechecking ? (
                         <>
@@ -278,7 +242,15 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                       )}
                     </button>
 
-                    <button className="text-xs font-semibold text-stone-900 dark:text-stone-100 flex items-center gap-1 hover:underline">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        triggerHaptic('light');
+                        onSelectDecision(decision);
+                      }}
+                      className="text-xs font-semibold text-stone-900 dark:text-stone-100 flex items-center gap-1 hover:underline cursor-pointer"
+                      aria-label={`View brief for ${decision.title}`}
+                    >
                       <span>View Brief</span>
                       <ExternalLink className="w-3 h-3" />
                     </button>

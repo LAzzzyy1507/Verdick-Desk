@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <rect width="512" height="512" rx="112" fill="#151619"/>
+  <rect x="2" y="2" width="508" height="508" rx="110" stroke="#2D2F36" stroke-width="4"/>
+  <!-- Stylized Geometric V Verdict Mark -->
+  <path d="M140 160 L256 380 L372 160" stroke="#EA580C" stroke-width="44" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Star emblem in apex -->
+  <circle cx="256" cy="380" r="14" fill="#F97316"/>
+  <path d="M256 120 L262 135 L278 141 L262 147 L256 162 L250 147 L234 141 L250 135 Z" fill="#F97316"/>
+</svg>

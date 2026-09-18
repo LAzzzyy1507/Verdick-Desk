@@ -157,8 +157,8 @@ export default function App() {
     storageService.syncWithCloudIfLoggedIn(decisions);
   };
 
-  const handleLogout = () => {
-    storageService.saveAccount(null);
+  const handleLogout = async () => {
+    await storageService.logoutAccount();
     setAccount(null);
   };
 

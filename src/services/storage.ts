@@ -307,16 +307,27 @@ export const storageService = {
 
     const dataToSync = decisions || this.getDecisions();
     try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (account.token) {
+        headers['Authorization'] = `Bearer ${account.token}`;
+      }
+
       const res = await fetch(`/api/sync/${encodeURIComponent(account.id)}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ decisions: dataToSync }),
       });
+
       if (res.ok) {
         account.isSynced = true;
         account.lastSyncedAt = new Date().toISOString();
         this.saveAccount(account);
         return true;
+      } else if (res.status === 401 || res.status === 403) {
+        // Session expired or invalid
+        console.warn('Sync rejected: session invalid or unauthorized.');
+        account.isSynced = false;
+        this.saveAccount(account);
       }
     } catch (err) {
       console.warn('Cloud sync offline or server unreachable', err);
@@ -328,7 +339,15 @@ export const storageService = {
     const account = this.getAccount();
     if (!account) return null;
     try {
-      const res = await fetch(`/api/sync/${encodeURIComponent(account.id)}`);
+      const headers: Record<string, string> = {};
+      if (account.token) {
+        headers['Authorization'] = `Bearer ${account.token}`;
+      }
+
+      const res = await fetch(`/api/sync/${encodeURIComponent(account.id)}`, {
+        headers,
+      });
+
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data.decisions) && data.decisions.length > 0) {
@@ -338,11 +357,33 @@ export const storageService = {
           this.saveAccount(account);
           return data.decisions;
         }
+      } else if (res.status === 401 || res.status === 403) {
+        console.warn('Pull rejected: session invalid or unauthorized.');
+        account.isSynced = false;
+        this.saveAccount(account);
       }
     } catch (e) {
       console.warn('Could not pull from cloud:', e);
     }
     return null;
+  },
+
+  async logoutAccount(): Promise<void> {
+    const account = this.getAccount();
+    if (account?.token) {
+      try {
+        await fetch('/api/auth/logout', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${account.token}`,
+          },
+        });
+      } catch (err) {
+        console.warn('Failed to notify server of logout:', err);
+      }
+    }
+    this.saveAccount(null);
   },
 
   // Dynamic Type scale

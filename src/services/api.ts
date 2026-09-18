@@ -50,6 +50,90 @@ export const apiService = {
     return data.decision as DecisionRecord;
   },
 
+  async researchDecisionStream(
+    params: {
+      question: string;
+      constraints?: string;
+      category?: string;
+      followUpContext?: string;
+      previousVerdict?: any;
+    },
+    onProgress?: (progress: { stage: string; step: number; totalSteps: number }) => void
+  ): Promise<DecisionRecord> {
+    if (!this.checkNetwork()) {
+      throw new OfflineException();
+    }
+
+    try {
+      const response = await fetch('/api/verdict/research-stream', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream',
+        },
+        body: JSON.stringify(params),
+      });
+
+      if (!response.ok) {
+        let errorMessage = 'Failed to execute decision research';
+        try {
+          const errorData = await response.json();
+          if (errorData.error) errorMessage = errorData.error;
+        } catch {}
+        throw new Error(errorMessage);
+      }
+
+      if (!response.body) {
+        return this.researchDecision(params);
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let finalDecision: DecisionRecord | null = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        let currentEvent = 'message';
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            currentEvent = line.substring(7).trim();
+          } else if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.substring(6));
+              if (currentEvent === 'progress' && onProgress) {
+                onProgress(data);
+              } else if (currentEvent === 'complete') {
+                finalDecision = data.decision;
+              } else if (currentEvent === 'error') {
+                throw new Error(data.error || 'Research execution failed');
+              }
+            } catch (err: any) {
+              if (currentEvent === 'error') throw err;
+            }
+          }
+        }
+      }
+
+      if (finalDecision) {
+        return finalDecision;
+      }
+
+      // Fallback
+      return this.researchDecision(params);
+    } catch (err: any) {
+      if (err instanceof OfflineException) throw err;
+      // If streaming is not supported or failed mid-way, fallback to standard endpoint
+      return this.researchDecision(params);
+    }
+  },
+
   async recheckDecision(decision: DecisionRecord): Promise<{ decision: DecisionRecord; delta: string }> {
     if (!this.checkNetwork()) {
       throw new OfflineException();

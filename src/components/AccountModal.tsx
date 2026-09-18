@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { UserAccount } from '../types';
-import { Apple, Mail, Cloud, Check, RefreshCw, X, LogOut, ShieldCheck } from 'lucide-react';
+import { Mail, Cloud, Check, RefreshCw, X, LogOut, ShieldCheck, KeyRound, AlertCircle, ArrowRight } from 'lucide-react';
 import { triggerHaptic } from '../utils/haptics';
 
 interface AccountModalProps {
@@ -26,36 +26,113 @@ export const AccountModal: React.FC<AccountModalProps> = ({
 }) => {
   const [emailInput, setEmailInput] = useState('');
   const [nameInput, setNameInput] = useState('');
-  const [showEmailForm, setShowEmailForm] = useState(false);
+  const [codeInput, setCodeInput] = useState('');
+  const [codeStep, setCodeStep] = useState(false);
+  const [devPreviewCode, setDevPreviewCode] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [statusNotice, setStatusNotice] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
-  const handleAppleSignIn = () => {
-    triggerHaptic('success');
-    const appleAcc: UserAccount = {
-      id: 'apple_user_7823',
-      email: 'alex.chen@icloud.com',
-      name: 'Alex Chen',
-      authProvider: 'apple',
-      isSynced: true,
-      lastSyncedAt: new Date().toISOString(),
-    };
-    onLogin(appleAcc);
+  const handleRequestCode = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const cleanEmail = emailInput.trim();
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      setErrorMessage('Please enter a valid email address.');
+      triggerHaptic('warning');
+      return;
+    }
+
+    setLoading(true);
+    setErrorMessage(null);
+    setStatusNotice(null);
+    try {
+      const res = await fetch('/api/auth/request-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: cleanEmail, name: nameInput.trim() }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        setErrorMessage(data.error || 'Failed to send verification code.');
+        triggerHaptic('warning');
+      } else {
+        triggerHaptic('success');
+        setCodeStep(true);
+        setStatusNotice(data.message || `Verification code sent to ${cleanEmail}`);
+        if (data.devCode) {
+          setDevPreviewCode(data.devCode);
+        }
+      }
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Network error requesting verification code.');
+      triggerHaptic('warning');
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const handleEmailSubmit = (e: React.FormEvent) => {
+  const handleVerifyCode = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!emailInput.trim()) return;
-    triggerHaptic('success');
-    const userAcc: UserAccount = {
-      id: 'usr_' + emailInput.replace(/[^a-zA-Z0-9]/g, '_'),
-      email: emailInput.trim(),
-      name: nameInput.trim() || emailInput.split('@')[0],
-      authProvider: 'email',
-      isSynced: true,
-      lastSyncedAt: new Date().toISOString(),
-    };
-    onLogin(userAcc);
+    const cleanCode = codeInput.trim();
+    if (!cleanCode) {
+      setErrorMessage('Please enter the 6-digit verification code.');
+      triggerHaptic('warning');
+      return;
+    }
+
+    setLoading(true);
+    setErrorMessage(null);
+    try {
+      const res = await fetch('/api/auth/verify-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: emailInput.trim(),
+          code: cleanCode,
+          name: nameInput.trim() || undefined,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        setErrorMessage(data.error || 'Invalid or expired code.');
+        triggerHaptic('warning');
+      } else {
+        triggerHaptic('success');
+        const loggedInAccount: UserAccount = {
+          id: data.user.id,
+          email: data.user.email,
+          name: data.user.name,
+          authProvider: 'email',
+          token: data.token,
+          isSynced: true,
+          lastSyncedAt: new Date().toISOString(),
+        };
+        onLogin(loggedInAccount);
+        onClose();
+      }
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Network error verifying code.');
+      triggerHaptic('warning');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleAutoFillCode = () => {
+    if (devPreviewCode) {
+      setCodeInput(devPreviewCode);
+      triggerHaptic('light');
+    }
+  };
+
+  const handleAppleRelayQuickFill = () => {
+    setEmailInput('analyst@verdictdesk.vault');
+    setNameInput('Verified Decision Analyst');
+    triggerHaptic('light');
   };
 
   return (
@@ -75,10 +152,10 @@ export const AccountModal: React.FC<AccountModalProps> = ({
             </div>
             <div>
               <h3 id="account-modal-title" className="font-brief-serif text-lg font-bold text-stone-900 dark:text-stone-100">
-                Cloud Sync & Persistence
+                Cloud Vault & Authentication
               </h3>
               <p className="text-xs text-stone-500 dark:text-stone-400 font-sf-sans">
-                Access your decision briefs across devices
+                Encrypted token-authenticated decision storage
               </p>
             </div>
           </div>
@@ -87,7 +164,7 @@ export const AccountModal: React.FC<AccountModalProps> = ({
               triggerHaptic('light');
               onClose();
             }}
-            className="p-2 rounded-full hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-500 transition-colors"
+            className="p-2 rounded-full hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-500 transition-colors cursor-pointer"
             aria-label="Close"
           >
             <X className="w-5 h-5" />
@@ -100,15 +177,9 @@ export const AccountModal: React.FC<AccountModalProps> = ({
             <div className="rounded-xl border border-stone-200 dark:border-stone-800 bg-stone-50 dark:bg-[#1A1C20] p-4">
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2">
-                  {account.authProvider === 'apple' ? (
-                    <span className="p-1.5 rounded-lg bg-black text-white dark:bg-white dark:text-black">
-                      <Apple className="w-4 h-4" />
-                    </span>
-                  ) : (
-                    <span className="p-1.5 rounded-lg bg-stone-200 dark:bg-stone-700 text-stone-800 dark:text-stone-200">
-                      <Mail className="w-4 h-4" />
-                    </span>
-                  )}
+                  <span className="p-1.5 rounded-lg bg-stone-200 dark:bg-stone-700 text-stone-800 dark:text-stone-200">
+                    <Mail className="w-4 h-4" />
+                  </span>
                   <div>
                     <h4 className="text-sm font-bold text-stone-900 dark:text-stone-100">
                       {account.name}
@@ -121,15 +192,15 @@ export const AccountModal: React.FC<AccountModalProps> = ({
 
                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 text-[11px] font-semibold border border-emerald-300 dark:border-emerald-800">
                   <Check className="w-3 h-3" />
-                  Synced
+                  Authenticated
                 </span>
               </div>
 
               <div className="mt-3 pt-3 border-t border-stone-200 dark:border-stone-700 text-xs text-stone-600 dark:text-stone-400 flex items-center justify-between">
-                <span>{decisionCount} briefs saved in cloud vault</span>
+                <span>{decisionCount} briefs in isolated vault</span>
                 <span className="font-mono text-[10px]">
                   {account.lastSyncedAt
-                    ? `Last: ${new Date(account.lastSyncedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+                    ? `Synced: ${new Date(account.lastSyncedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
                     : 'Synced'}
                 </span>
               </div>
@@ -142,10 +213,10 @@ export const AccountModal: React.FC<AccountModalProps> = ({
                   await onSyncNow();
                 }}
                 disabled={isSyncing}
-                className="flex-1 py-2.5 px-4 rounded-xl bg-stone-900 hover:bg-stone-800 dark:bg-stone-100 dark:hover:bg-stone-200 text-stone-100 dark:text-stone-900 text-xs font-semibold flex items-center justify-center gap-2 transition-colors disabled:opacity-60 shadow-xs"
+                className="flex-1 py-2.5 px-4 rounded-xl bg-stone-900 hover:bg-stone-800 dark:bg-stone-100 dark:hover:bg-stone-200 text-stone-100 dark:text-stone-900 text-xs font-semibold flex items-center justify-center gap-2 transition-colors disabled:opacity-60 shadow-xs cursor-pointer"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
-                <span>{isSyncing ? 'Syncing...' : 'Sync Now'}</span>
+                <span>{isSyncing ? 'Syncing...' : 'Sync Vault Now'}</span>
               </button>
 
               <button
@@ -153,65 +224,155 @@ export const AccountModal: React.FC<AccountModalProps> = ({
                   triggerHaptic('light');
                   onLogout();
                 }}
-                className="py-2.5 px-4 rounded-xl border border-stone-200 dark:border-stone-800 hover:bg-stone-100 dark:hover:bg-stone-800 text-rose-600 text-xs font-semibold flex items-center gap-1.5 transition-colors"
+                className="py-2.5 px-4 rounded-xl border border-stone-200 dark:border-stone-800 hover:bg-stone-100 dark:hover:bg-stone-800 text-rose-600 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
               >
                 <LogOut className="w-3.5 h-3.5" />
                 <span>Sign Out</span>
               </button>
             </div>
+
+            <div className="pt-2 flex items-center gap-2 text-[11px] text-stone-500 dark:text-stone-400">
+              <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+              <span>Session verified with cryptographic Bearer token.</span>
+            </div>
           </div>
         ) : (
-          /* Login View */
+          /* Authentication Form */
           <div className="space-y-4">
             <p className="text-xs text-stone-600 dark:text-stone-400 font-sf-sans leading-relaxed">
-              Connect your account to synchronize decisions across iPhone, iPad, and desktop without losing local offline caches.
+              Sign in with a verified session token to back up and synchronize your decision briefs across devices in a private, isolated vault.
             </p>
 
-            <div className="space-y-2.5">
-              {/* Sign in with Apple button */}
-              <button
-                onClick={handleAppleSignIn}
-                className="w-full py-3 px-4 rounded-xl bg-black hover:bg-neutral-900 text-white text-sm font-semibold flex items-center justify-center gap-2.5 shadow-xs transition-colors"
-              >
-                <Apple className="w-4 h-4 fill-current" />
-                <span>Sign in with Apple</span>
-              </button>
+            {errorMessage && (
+              <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 text-rose-700 dark:text-rose-300 text-xs flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>{errorMessage}</span>
+              </div>
+            )}
 
-              {/* Email Login Alternative */}
-              {!showEmailForm ? (
-                <button
-                  onClick={() => setShowEmailForm(true)}
-                  className="w-full py-2.5 px-4 rounded-xl border border-stone-300 dark:border-stone-700 hover:bg-stone-50 dark:hover:bg-stone-800/60 text-stone-800 dark:text-stone-200 text-xs font-semibold flex items-center justify-center gap-2 transition-colors"
-                >
-                  <Mail className="w-4 h-4" />
-                  <span>Continue with Work / Personal Email</span>
-                </button>
-              ) : (
-                <form onSubmit={handleEmailSubmit} className="space-y-2 pt-2">
+            {statusNotice && (
+              <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900 text-emerald-800 dark:text-emerald-300 text-xs flex items-start gap-2">
+                <Check className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>{statusNotice}</span>
+              </div>
+            )}
+
+            {!codeStep ? (
+              /* Step 1: Enter Email & Request Code */
+              <form onSubmit={handleRequestCode} className="space-y-3">
+                <div>
+                  <label className="block text-xs font-medium text-stone-700 dark:text-stone-300 mb-1">
+                    Your Name (Optional)
+                  </label>
                   <input
                     type="text"
-                    placeholder="Your Name (Optional)"
+                    placeholder="e.g. Alex Chen"
                     value={nameInput}
                     onChange={(e) => setNameInput(e.target.value)}
-                    className="w-full px-3 py-2 text-xs rounded-lg border border-stone-300 dark:border-stone-700 bg-stone-50 dark:bg-[#1A1C20] text-stone-900 dark:text-stone-100"
+                    className="w-full px-3.5 py-2.5 text-xs rounded-xl border border-stone-300 dark:border-stone-700 bg-stone-50 dark:bg-[#1A1C20] text-stone-900 dark:text-stone-100 focus:outline-hidden focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
                   />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-stone-700 dark:text-stone-300 mb-1">
+                    Email Address
+                  </label>
                   <input
                     type="email"
                     required
-                    placeholder="name@company.com"
+                    placeholder="name@organization.com"
                     value={emailInput}
                     onChange={(e) => setEmailInput(e.target.value)}
-                    className="w-full px-3 py-2 text-xs rounded-lg border border-stone-300 dark:border-stone-700 bg-stone-50 dark:bg-[#1A1C20] text-stone-900 dark:text-stone-100"
+                    className="w-full px-3.5 py-2.5 text-xs rounded-xl border border-stone-300 dark:border-stone-700 bg-stone-50 dark:bg-[#1A1C20] text-stone-900 dark:text-stone-100 focus:outline-hidden focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
                   />
+                </div>
+
+                <div className="pt-1 flex items-center justify-between">
                   <button
-                    type="submit"
-                    className="w-full py-2 rounded-lg bg-stone-900 dark:bg-stone-100 text-stone-50 dark:text-stone-900 text-xs font-semibold"
+                    type="button"
+                    onClick={handleAppleRelayQuickFill}
+                    className="text-[11px] text-stone-500 hover:text-stone-800 dark:hover:text-stone-200 underline cursor-pointer"
                   >
-                    Save & Enable Cloud Sync
+                    Quick fill demo credentials
                   </button>
-                </form>
-              )}
-            </div>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="w-full py-3 px-4 rounded-xl bg-stone-900 hover:bg-stone-800 dark:bg-stone-100 dark:hover:bg-stone-200 text-stone-100 dark:text-stone-900 text-xs font-semibold flex items-center justify-center gap-2 transition-colors disabled:opacity-60 cursor-pointer shadow-xs"
+                >
+                  {loading ? (
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <>
+                      <span>Send Verification Code</span>
+                      <ArrowRight className="w-4 h-4" />
+                    </>
+                  )}
+                </button>
+              </form>
+            ) : (
+              /* Step 2: Enter Verification Code */
+              <form onSubmit={handleVerifyCode} className="space-y-3">
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs font-medium text-stone-700 dark:text-stone-300">
+                      6-Digit Security Code
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCodeStep(false);
+                        setErrorMessage(null);
+                      }}
+                      className="text-[11px] text-stone-500 hover:underline cursor-pointer"
+                    >
+                      Change email
+                    </button>
+                  </div>
+                  <input
+                    type="text"
+                    required
+                    maxLength={6}
+                    placeholder="123456"
+                    value={codeInput}
+                    onChange={(e) => setCodeInput(e.target.value.replace(/\D/g, ''))}
+                    className="w-full px-3.5 py-3 text-center tracking-widest font-mono text-base font-bold rounded-xl border border-stone-300 dark:border-stone-700 bg-stone-50 dark:bg-[#1A1C20] text-stone-900 dark:text-stone-100 focus:outline-hidden focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
+                  />
+                </div>
+
+                {devPreviewCode && (
+                  <div
+                    onClick={handleAutoFillCode}
+                    className="p-2.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/80 text-amber-900 dark:text-amber-200 text-xs flex items-center justify-between cursor-pointer hover:bg-amber-100/70 transition-colors"
+                  >
+                    <div className="flex items-center gap-2">
+                      <KeyRound className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+                      <span>Verification code: <strong className="font-mono font-bold">{devPreviewCode}</strong></span>
+                    </div>
+                    <span className="text-[10px] font-semibold uppercase tracking-wider bg-amber-200/60 dark:bg-amber-800/60 px-2 py-0.5 rounded-md">
+                      Tap to fill
+                    </span>
+                  </div>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="w-full py-3 px-4 rounded-xl bg-stone-900 hover:bg-stone-800 dark:bg-stone-100 dark:hover:bg-stone-200 text-stone-100 dark:text-stone-900 text-xs font-semibold flex items-center justify-center gap-2 transition-colors disabled:opacity-60 cursor-pointer shadow-xs"
+                >
+                  {loading ? (
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <>
+                      <span>Verify & Unlock Vault</span>
+                      <ShieldCheck className="w-4 h-4" />
+                    </>
+                  )}
+                </button>
+              </form>
+            )}
 
             <div className="pt-3 border-t border-stone-100 dark:border-stone-800/80 flex items-center gap-2 text-[11px] text-stone-500 dark:text-stone-400">
               <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
